@@ -271,6 +271,61 @@ dbn_model.initialize_initial_state()
 print("Initial state initialized for inference.")
 
 
+print("\nOriginal dbn_data_train shape:", dbn_data_train.shape)
+
+# ---- NEW: build a tiny synthetic set so slice 0 & 1 see all states ----
+
+# all possible states
+class_states = sorted(df_disc[CLASS_COL].unique())     # e.g. [0,1,2,3]
+feat_states  = list(range(N_BINS))                     # e.g. [0,1,2,3,4]
+
+print("Class states:", class_states)
+print("Feature bin states:", feat_states)
+
+# use first row as a template for synthetic rows
+template = dbn_data_train.iloc[0].copy()
+synthetic_rows = []
+
+# ensure each class state appears in (Type,0) and (Type,1)
+for t in [0, 1]:
+    for s in class_states:
+        r = template.copy()
+        r[(CLASS_COL, t)] = s
+        synthetic_rows.append(r)
+
+# ensure each feature bin appears in (col,0) and (col,1)
+for col in CONT_COLS:
+    for t in [0, 1]:
+        for s in feat_states:
+            r = template.copy()
+            r[(col, t)] = s
+            synthetic_rows.append(r)
+
+synthetic_df = pd.DataFrame(synthetic_rows)
+
+# augment the training data
+dbn_data_aug = pd.concat([dbn_data_train, synthetic_df], ignore_index=True)
+
+print("Augmented training data shape:", dbn_data_aug.shape)
+
+print("\nChecking unique states in first two slices (after augmentation):")
+for col in [CLASS_COL] + CONT_COLS:
+    for t in [0, 1]:
+        u = sorted(dbn_data_aug[(col, t)].unique())
+        print(f"{(col, t)} -> {u}")
+
+# ---- NOW: fit the model on the augmented data ----
+print("\nFitting DBN model on augmented training data...")
+dbn_model.fit(dbn_data_aug)
+print("Done fitting. Checking model...")
+dbn_model.check_model()
+print("Model check passed ✅")
+
+dbn_model.initialize_initial_state()
+print("Initial state initialized for inference.")
+
+
+
 
 
 print("CPD for Type at time slice 0 (prior):")

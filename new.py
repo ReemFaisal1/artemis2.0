@@ -1,459 +1,456 @@
 import pandas as pd
 import numpy as np
-
-from sklearn.preprocessing import KBinsDiscretizer
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-
 from pgmpy.models import DynamicBayesianNetwork as DBN
+from pgmpy.estimators import MaximumLikelihoodEstimator, BayesianEstimator
 from pgmpy.inference import DBNInference
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.preprocessing import KBinsDiscretizer
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-from IPython.display import display
+# Set random seed for reproducibility
 
-# ===== CONFIG (edit these if needed) =====
-CSV_PATH = "radar_tracks.csv"   # <-- change this to your file path
+np.random.seed(42)
 
-TRACK_COL = "mc_id"             # track / Monte-Carlo run id column
-TIME_COL = "time_s"             # time column
-CLASS_COL = "Type"              # encoded object type (0..3)
+print(”=” * 80)
+print(“DYNAMIC BAYESIAN NETWORK FOR RADAR DATA ANALYSIS”)
+print(”=” * 80)
 
-# continuous radar measurements
-CONT_COLS = ["range_m", "length_m", "RCSinst_dB", "SNRinst_dB"]
+# ============================================================================
 
-# number of time steps per track to use
-T = 20
+# STEP 1: LOAD AND PREPROCESS DATA
 
-# number of bins for discretization
-N_BINS = 5
+# ============================================================================
 
-# If you want to limit number of tracks per class for speed (optional)
-MAX_TRACKS_PER_CLASS = None  # e.g. 200, or leave as None to use all
+print(”\n[STEP 1] Loading data…”)
 
-print("Config:")
-print("CSV_PATH:", CSV_PATH)
-print("TRACK_COL:", TRACK_COL)
-print("TIME_COL:", TIME_COL)
-print("CLASS_COL:", CLASS_COL)
-print("CONT_COLS:", CONT_COLS)
-print("T (time steps per track):", T)
-print("N_BINS (for discretization):", N_BINS)
-print("MAX_TRACKS_PER_CLASS:", MAX_TRACKS_PER_CLASS)
+# Load your CSV file
 
+# Replace ‘your_radar_data.csv’ with your actual file path
 
+df = pd.read_csv(‘your_radar_data.csv’)
 
-
-
-
-
-# Load the CSV
-df = pd.read_csv(CSV_PATH)
-
-print("Raw dataframe loaded.")
-print("Shape:", df.shape)
-print("\nFirst 5 rows:")
-display(df.head())
-
-print("\nDtypes:")
+print(f”Data shape: {df.shape}”)
+print(f”\nFirst few rows:”)
+print(df.head())
+print(f”\nData types:”)
 print(df.dtypes)
+print(f”\nMissing values:”)
+print(df.isnull().sum())
 
-# Check required columns
-required = {TRACK_COL, TIME_COL, CLASS_COL} | set(CONT_COLS)
-missing = required.difference(df.columns)
-if missing:
-    raise ValueError(f"Missing expected columns in CSV: {missing}")
+# ============================================================================
 
-# Sort by track + time to be safe
-df = df.sort_values([TRACK_COL, TIME_COL]).reset_index(drop=True)
+# STEP 2: DATA PREPARATION FOR DBN
 
-print("\nAfter sorting by track and time:")
-print("Shape:", df.shape)
+# ============================================================================
 
-# Basic checks on label and tracks
-print("\nNumber of unique tracks:", df[TRACK_COL].nunique())
-print("Track id sample:", df[TRACK_COL].unique()[:10])
+print(”\n[STEP 2] Preparing data for DBN…”)
 
-print("\nClass distribution (Type):")
-print(df[CLASS_COL].value_counts())
+# Sort by mc_id and time to ensure temporal ordering
 
+df = df.sort_values([‘mc_id’, ‘time_s’]).reset_index(drop=True)
 
+# DBN requires discrete variables - discretize continuous variables
 
+print(”\nDiscretizing continuous variables…”)
 
+# Create a copy for discretization
 
+df_discrete = df.copy()
 
+# Discretize continuous features into bins
 
-# One label per track (assume Type is constant within a track)
-track_labels = (
-    df.groupby(TRACK_COL)[CLASS_COL]
-    .agg(lambda x: x.iloc[0])
-    .to_frame("label")
-    .reset_index()
-)
+# You can adjust n_bins based on your data distribution
 
-print("Track labels (one row per track):")
-display(track_labels.head())
+n_bins = 5  # Using 5 bins for each continuous variable
 
-print("\nClass distribution over tracks:")
-print(track_labels["label"].value_counts())
+discretizer_rcs = KBinsDiscretizer(n_bins=n_bins, encode=‘ordinal’, strategy=‘quantile’)
+discretizer_snr = KBinsDiscretizer(n_bins=n_bins, encode=‘ordinal’, strategy=‘quantile’)
+discretizer_range = KBinsDiscretizer(n_bins=n_bins, encode=‘ordinal’, strategy=‘quantile’)
 
-# Train/test split by track and by class
-test_ratio = 0.3
-rng = np.random.RandomState(42)
+# Handle ‘length’ - if it’s continuous, discretize it; if categorical, leave as is
 
-train_track_ids = []
-test_track_ids = []
+if df[‘length’].dtype in [‘float64’, ‘int64’] and df[‘length’].nunique() > 10:
+discretizer_length = KBinsDiscretizer(n_bins=n_bins, encode=‘ordinal’, strategy=‘quantile’)
+df_discrete[‘length’] = discretizer_length.fit_transform(df[[‘length’]]).astype(int)
+else:
+df_discrete[‘length’] = df[‘length’].astype(int)
 
-for cls, group in track_labels.groupby("label"):
-    track_ids_cls = group[TRACK_COL].tolist()
-    rng.shuffle(track_ids_cls)
+df_discrete[‘rcs’] = discretizer_rcs.fit_transform(df[[‘rcs’]]).astype(int)
+df_discrete[‘snr’] = discretizer_snr.fit_transform(df[[‘snr’]]).astype(int)
+df_discrete[‘range’] = discretizer_range.fit_transform(df[[‘range’]]).astype(int)
+
+# Encode ‘type’ if it’s categorical
+
+if df[‘type’].dtype == ‘object’:
+df_discrete[‘type’] = pd.Categorical(df[‘type’]).codes
+else:
+df_discrete[‘type’] = df[‘type’].astype(int)
+
+print(”\nDiscretized data sample:”)
+print(df_discrete.head(10))
+
+# ============================================================================
+
+# STEP 3: CREATE TIME-SLICED DATA FOR DBN
+
+# ============================================================================
+
+print(”\n[STEP 3] Creating time-sliced data…”)
+
+# DBN requires data in specific format: consecutive time slices
+
+# We’ll create pairs of (t, t+1) observations
+
+def create_time_slices(data, mc_id_col=‘mc_id’, time_col=‘time_s’):
+“””
+Create time-sliced data for DBN training.
+Each row will contain variables at time t and t+1.
+“””
+sliced_data = []
+
+```
+for mc_id in data[mc_id_col].unique():
+    mc_data = data[data[mc_id_col] == mc_id].sort_values(time_col)
     
-    if MAX_TRACKS_PER_CLASS is not None:
-        track_ids_cls = track_ids_cls[:MAX_TRACKS_PER_CLASS]
+    # Create consecutive pairs
+    for i in range(len(mc_data) - 1):
+        row_t = mc_data.iloc[i]
+        row_t1 = mc_data.iloc[i + 1]
+        
+        # Create a dictionary with t and t+1 values
+        sliced_row = {}
+        for col in ['type', 'rcs', 'snr', 'length', 'range']:
+            sliced_row[f'{col}_t0'] = row_t[col]
+            sliced_row[f'{col}_t1'] = row_t1[col]
+        
+        sliced_data.append(sliced_row)
+
+return pd.DataFrame(sliced_data)
+```
+
+# Create time-sliced dataset
+
+df_sliced = create_time_slices(df_discrete)
+
+print(f”Time-sliced data shape: {df_sliced.shape}”)
+print(f”\nTime-sliced data sample:”)
+print(df_sliced.head())
+
+# ============================================================================
+
+# STEP 4: SPLIT DATA INTO TRAIN/TEST SETS
+
+# ============================================================================
+
+print(”\n[STEP 4] Splitting data…”)
+
+# Split into train and test sets (80-20 split)
+
+train_data, test_data = train_test_split(df_sliced, test_size=0.2, random_state=42)
+
+print(f”Training set size: {len(train_data)}”)
+print(f”Test set size: {len(test_data)}”)
+
+# ============================================================================
+
+# STEP 5: DEFINE DBN STRUCTURE
+
+# ============================================================================
+
+print(”\n[STEP 5] Defining DBN structure…”)
+
+# Define the Dynamic Bayesian Network structure
+
+# Edges are defined as (from_node, to_node, time_relation)
+
+# time_relation=0 means intra-slice (within same time)
+
+# time_relation=1 means inter-slice (from t to t+1)
+
+dbn = DBN()
+
+# Define variables at each time slice
+
+# Format: (variable_name, time_slice)
+
+variables_t0 = [(‘type’, 0), (‘rcs’, 0), (‘snr’, 0), (‘length’, 0), (‘range’, 0)]
+variables_t1 = [(‘type’, 1), (‘rcs’, 1), (‘snr’, 1), (‘length’, 1), (‘range’, 1)]
+
+# Add nodes to the DBN
+
+dbn.add_nodes_from([var[0] for var in variables_t0])
+
+# Define edges for the DBN structure
+
+# Inter-slice edges (temporal dependencies from t to t+1)
+
+edges_inter = [
+((‘type’, 0), (‘type’, 1)),      # Type at t influences type at t+1
+((‘rcs’, 0), (‘rcs’, 1)),        # RCS at t influences RCS at t+1
+((‘snr’, 0), (‘snr’, 1)),        # SNR at t influences SNR at t+1
+((‘range’, 0), (‘range’, 1)),    # Range at t influences range at t+1
+((‘length’, 0), (‘length’, 1)),  # Length at t influences length at t+1
+
+```
+# Cross-variable temporal dependencies
+(('rcs', 0), ('snr', 1)),        # RCS affects future SNR
+(('range', 0), ('snr', 1)),      # Range affects future SNR
+(('snr', 0), ('type', 1)),       # SNR affects future type detection
+```
+
+]
+
+# Intra-slice edges (dependencies within same time slice at t=0)
+
+edges_intra = [
+((‘rcs’, 0), (‘snr’, 0)),        # RCS affects SNR
+((‘range’, 0), (‘snr’, 0)),      # Range affects SNR
+((‘snr’, 0), (‘type’, 0)),       # SNR affects type detection
+]
+
+# Add edges to DBN
+
+dbn.add_edges_from(edges_inter + edges_intra)
+
+print(f”DBN nodes: {dbn.nodes()}”)
+print(f”DBN edges: {dbn.edges()}”)
+
+# Visualize the structure (optional)
+
+print(”\nDBN structure defined successfully!”)
+
+# ============================================================================
+
+# STEP 6: PREPARE DATA IN PGMPY FORMAT
+
+# ============================================================================
+
+print(”\n[STEP 6] Preparing data in pgmpy format…”)
+
+# pgmpy expects data with columns named as (variable, timeslice)
+
+# We need to rename our columns to match this format
+
+def format_data_for_pgmpy(data):
+“”“Format data for pgmpy DBN.”””
+formatted = pd.DataFrame()
+for col in [‘type’, ‘rcs’, ‘snr’, ‘length’, ‘range’]:
+formatted[(col, 0)] = data[f’{col}_t0’].astype(int)
+formatted[(col, 1)] = data[f’{col}_t1’].astype(int)
+return formatted
+
+train_formatted = format_data_for_pgmpy(train_data)
+test_formatted = format_data_for_pgmpy(test_data)
+
+print(“Formatted training data sample:”)
+print(train_formatted.head())
+
+# ============================================================================
+
+# STEP 7: LEARN PARAMETERS FROM DATA
+
+# ============================================================================
+
+print(”\n[STEP 7] Learning DBN parameters…”)
+
+# Fit the DBN model using Maximum Likelihood Estimation
+
+print(“Fitting model with Maximum Likelihood Estimation…”)
+
+try:
+dbn.fit(train_formatted, estimator=MaximumLikelihoodEstimator)
+print(“✓ Model fitted successfully!”)
+
+```
+# Display learned CPDs (Conditional Probability Distributions)
+print(f"\nNumber of CPDs learned: {len(dbn.cpds)}")
+
+# Show one example CPD
+print("\nExample CPD for 'type' at time slice 1:")
+for cpd in dbn.cpds:
+    if cpd.variable == 'type' and cpd.variables[0] == ('type', 1):
+        print(cpd)
+        break
+```
+
+except Exception as e:
+print(f”✗ Error during fitting: {e}”)
+print(”\nTroubleshooting tips:”)
+print(“1. Check that all variables are discrete (integer types)”)
+print(“2. Verify no missing values in the data”)
+print(“3. Ensure sufficient data for each variable state combination”)
+
+# ============================================================================
+
+# STEP 8: INFERENCE AND PREDICTION
+
+# ============================================================================
+
+print(”\n[STEP 8] Making predictions on test set…”)
+
+# Create inference object
+
+dbn_inference = DBNInference(dbn)
+
+# Make predictions on test set
+
+predictions = []
+actuals = []
+
+print(“Predicting ‘type’ at t+1 given observations at t…”)
+
+for idx in range(len(test_formatted)):
+# Get evidence from time slice 0
+evidence = {
+(‘type’, 0): int(test_formatted.iloc[idx][(‘type’, 0)]),
+(‘rcs’, 0): int(test_formatted.iloc[idx][(‘rcs’, 0)]),
+(‘snr’, 0): int(test_formatted.iloc[idx][(‘snr’, 0)]),
+(‘length’, 0): int(test_formatted.iloc[idx][(‘length’, 0)]),
+(‘range’, 0): int(test_formatted.iloc[idx][(‘range’, 0)])
+}
+
+```
+# Query the probability distribution for 'type' at t+1
+try:
+    result = dbn_inference.query([('type', 1)], evidence=evidence)
     
-    n_total = len(track_ids_cls)
-    n_test = max(1, int(test_ratio * n_total))
+    # Get the most likely state
+    probs = result[('type', 1)].values
+    predicted_type = np.argmax(probs)
     
-    test_ids_cls = track_ids_cls[:n_test]
-    train_ids_cls = track_ids_cls[n_test:]
+    predictions.append(predicted_type)
+    actuals.append(int(test_formatted.iloc[idx][('type', 1)]))
     
-    train_track_ids.extend(train_ids_cls)
-    test_track_ids.extend(test_ids_cls)
-    
-    print(f"\nClass {cls}: total tracks used = {n_total}")
-    print(f"  Train: {len(train_ids_cls)}, Test: {len(test_ids_cls)}")
+except Exception as e:
+    # If inference fails for this sample, use most common class
+    predictions.append(train_formatted[('type', 1)].mode()[0])
+    actuals.append(int(test_formatted.iloc[idx][('type', 1)]))
 
-train_track_ids = np.array(train_track_ids)
-test_track_ids = np.array(test_track_ids)
+# Progress indicator
+if (idx + 1) % 1000 == 0:
+    print(f"  Processed {idx + 1}/{len(test_formatted)} samples...")
+```
 
-print("\n=== Overall split ===")
-print("Total train tracks:", len(train_track_ids))
-print("Total test tracks:", len(test_track_ids))
-print("Sample train ids:", train_track_ids[:10])
-print("Sample test ids:", test_track_ids[:10])
+print(f”✓ Predictions complete!”)
 
-# Sub-dataframes
-df_train = df[df[TRACK_COL].isin(train_track_ids)].copy()
-df_test  = df[df[TRACK_COL].isin(test_track_ids)].copy()
+# ============================================================================
 
-print("\nTrain dataframe shape:", df_train.shape)
-print("Test dataframe shape:", df_test.shape)
+# STEP 9: EVALUATE MODEL PERFORMANCE
 
+# ============================================================================
 
+print(”\n[STEP 9] Evaluating model performance…”)
+print(”=” * 80)
 
+# Calculate accuracy
 
+accuracy = accuracy_score(actuals, predictions)
+print(f”\nACCURACY: {accuracy:.4f} ({accuracy*100:.2f}%)”)
 
-print("Basic stats for continuous columns (TRAIN only):")
-display(df_train[CONT_COLS].describe())
+# Detailed classification report
 
-# Optional: peek at value ranges
-for col in CONT_COLS:
-    print(f"\nColumn: {col}")
-    print("  Min:", df_train[col].min())
-    print("  Max:", df_train[col].max())
-    
-    
-    
-    
-# Fit KBinsDiscretizer on TRAIN continuous columns
-disc = KBinsDiscretizer(
-    n_bins=N_BINS,
-    encode="ordinal",
-    strategy="quantile"
-)
-
-disc.fit(df_train[CONT_COLS])
-
-print("KBinsDiscretizer fitted.")
-print("\nBin edges per feature (approx quantiles):")
-for col, edges in zip(CONT_COLS, disc.bin_edges_):
-    print(f"{col}: {edges}")
-
-# Apply discretizer to ALL data
-df_disc = df.copy()
-df_disc[CONT_COLS] = disc.transform(df_disc[CONT_COLS]).astype(int)
-
-print("\nAfter discretization: head of discretized df:")
-display(df_disc.head())
-
-# Check unique bins used for each feature
-for col in CONT_COLS:
-    print(f"\nDiscretized {col} value counts:")
-    print(df_disc[col].value_counts().sort_index())
-    
-    
-    
-    
-# We will create a wide table:
-# columns like (Type, 0), (range_m, 0), ..., (Type, 1), (range_m, 1), ...
-
-rows = []
-used_train_ids = []
-
-for tid in train_track_ids:
-    g = df_disc[df_disc[TRACK_COL] == tid].sort_values(TIME_COL)
-    n_steps = len(g)
-    
-    if n_steps < T:
-        # Skip tracks that are too short
-        continue
-    
-    g = g.iloc[:T].reset_index(drop=True)
-    
-    row = {}
-    for t in range(T):
-        # class variable at time t
-        row[(CLASS_COL, t)] = int(g.loc[t, CLASS_COL])
-        # discretized continuous features
-        for col in CONT_COLS:
-            row[(col, t)] = int(g.loc[t, col])
-    
-    rows.append(row)
-    used_train_ids.append(tid)
-
-dbn_data_train = pd.DataFrame(rows)
-
-print("DBN training DataFrame built.")
-print("Shape:", dbn_data_train.shape)
-print("Number of tracks actually used (len >= T):", len(used_train_ids))
-
-print("\nColumns (first 20):")
-print(dbn_data_train.columns[:20])
-
-print("\nHead of dbn_data_train:")
-display(dbn_data_train.head())
-
-# Check that Type over time is constant within a row (sanity check)
-print("\nCheck class consistency for first few rows:")
-for i in range(min(3, len(dbn_data_train))):
-    row_types = [dbn_data_train[(CLASS_COL, t)].iloc[i] for t in range(T)]
-    print(f"Row {i} Type sequence:", row_types)
-    
-    
-    
-    
-# Build DBN structure
-dbn_model = DBN()
-
-# Intra-slice edges (at time 0)
-intra_edges = []
-for col in CONT_COLS:
-    intra_edges.append(((CLASS_COL, 0), (col, 0)))
-
-# Temporal edges: slice 0 -> slice 1
-inter_edges = [((CLASS_COL, 0), (CLASS_COL, 1))]
-for col in CONT_COLS:
-    inter_edges.append(((col, 0), (col, 1)))
-
-print("Intra-slice edges:")
-for e in intra_edges:
-    print(" ", e)
-
-print("\nTemporal edges:")
-for e in inter_edges:
-    print(" ", e)
-
-dbn_model.add_edges_from(intra_edges + inter_edges)
-
-print("\nNodes in the model:")
-print(dbn_model.nodes())
-
-print("\nEdges in the model:")
-print(dbn_model.edges())
-
-# Train / fit CPDs from dbn_data_train
-print("\nFitting DBN model on training data...")
-dbn_model.fit(dbn_data_train)
-
-print("Done fitting. Checking model...")
-dbn_model.check_model()
-print("Model check passed ✅")
-
-# Initialize initial state for DBNInference
-dbn_model.initialize_initial_state()
-print("Initial state initialized for inference.")
-
-
-print("\nOriginal dbn_data_train shape:", dbn_data_train.shape)
-
-# ---- NEW: build a tiny synthetic set so slice 0 & 1 see all states ----
-
-# all possible states
-class_states = sorted(df_disc[CLASS_COL].unique())     # e.g. [0,1,2,3]
-feat_states  = list(range(N_BINS))                     # e.g. [0,1,2,3,4]
-
-print("Class states:", class_states)
-print("Feature bin states:", feat_states)
-
-# use first row as a template for synthetic rows
-template = dbn_data_train.iloc[0].copy()
-synthetic_rows = []
-
-# ensure each class state appears in (Type,0) and (Type,1)
-for t in [0, 1]:
-    for s in class_states:
-        r = template.copy()
-        r[(CLASS_COL, t)] = s
-        synthetic_rows.append(r)
-
-# ensure each feature bin appears in (col,0) and (col,1)
-for col in CONT_COLS:
-    for t in [0, 1]:
-        for s in feat_states:
-            r = template.copy()
-            r[(col, t)] = s
-            synthetic_rows.append(r)
-
-synthetic_df = pd.DataFrame(synthetic_rows)
-
-# augment the training data
-dbn_data_aug = pd.concat([dbn_data_train, synthetic_df], ignore_index=True)
-
-print("Augmented training data shape:", dbn_data_aug.shape)
-
-print("\nChecking unique states in first two slices (after augmentation):")
-for col in [CLASS_COL] + CONT_COLS:
-    for t in [0, 1]:
-        u = sorted(dbn_data_aug[(col, t)].unique())
-        print(f"{(col, t)} -> {u}")
-
-# ---- NOW: fit the model on the augmented data ----
-print("\nFitting DBN model on augmented training data...")
-dbn_model.fit(dbn_data_aug)
-print("Done fitting. Checking model...")
-dbn_model.check_model()
-print("Model check passed ✅")
-
-dbn_model.initialize_initial_state()
-print("Initial state initialized for inference.")
-
-
-
-
-
-print("CPD for Type at time slice 0 (prior):")
-cpd_type0 = dbn_model.get_cpds((CLASS_COL, 0))
-print(cpd_type0)
-
-# Example: CPD of one feature at t=0 given Type_0
-feat = CONT_COLS[2]  # RCSinst_dB, for example
-print(f"\nCPD for {feat} at t=0 given Type_0:")
-cpd_feat0 = dbn_model.get_cpds((feat, 0))
-print(cpd_feat0)
-
-
-
-
-# We'll write the classification logic inline (no function),
-# but you can copy/paste as needed.
-
-dbn_inf = DBNInference(dbn_model)
-print("DBNInference object created.")
-
-
-# Let's test on ONE example track first to see the evidence dict
-example_tid = test_track_ids[0]
-print("\nUsing example test track id:", example_tid)
-
-g_example = df_disc[df_disc[TRACK_COL] == example_tid].sort_values(TIME_COL).reset_index(drop=True)
-print("Example track length:", len(g_example))
-
-# Use up to T steps (or fewer if shorter)
-T_eff_example = min(T, len(g_example))
-g_example = g_example.iloc[:T_eff_example]
-
-print("\nExample track (first few rows after discretization):")
-display(g_example[[TRACK_COL, TIME_COL, CLASS_COL] + CONT_COLS].head())
-
-# Build evidence dictionary for this track
-evidence_example = {}
-for t in range(T_eff_example):
-    for col in CONT_COLS:
-        evidence_example[(col, t)] = int(g_example.loc[t, col])
-
-print("\nEvidence dictionary keys (first 20):")
-print(list(evidence_example.keys())[:20])
-
-print("\nRunning forward inference on example track...")
-last_t = T_eff_example - 1
-result_example = dbn_inf.forward_inference(
-    variables=[(CLASS_COL, last_t)],
-    evidence=evidence_example
-)
-
-dist_example = result_example[(CLASS_COL, last_t)]
-print("\nPosterior over Type at final time step:")
-print("Values:", dist_example.values)
-print("State names:", dist_example.state_names)
-
-pred_class_example = int(dist_example.values.argmax())
-true_class_example = int(g_example[CLASS_COL].iloc[0])
-
-print(f"\nTrue class: {true_class_example}")
-print(f"Predicted class: {pred_class_example}")
-
-
-
-
-
-
-y_true = []
-y_pred = []
-
-print("Running classification on all test tracks...\n")
-
-for idx, tid in enumerate(test_track_ids):
-    g = df_disc[df_disc[TRACK_COL] == tid].sort_values(TIME_COL).reset_index(drop=True)
-    if g.empty:
-        continue
-    
-    true_label = int(g[CLASS_COL].iloc[0])
-    
-    T_eff = min(T, len(g))
-    g_slice = g.iloc[:T_eff]
-    
-    # Build evidence
-    evidence = {}
-    for t in range(T_eff):
-        for col in CONT_COLS:
-            evidence[(col, t)] = int(g_slice.loc[t, col])
-    
-    # Inference
-    last_t = T_eff - 1
-    result = dbn_inf.forward_inference(
-        variables=[(CLASS_COL, last_t)],
-        evidence=evidence
-    )
-    
-    dist = result[(CLASS_COL, last_t)]
-    probs = dist.values
-    pred_label = int(probs.argmax())
-    
-    y_true.append(true_label)
-    y_pred.append(pred_label)
-    
-    if (idx + 1) % 20 == 0:
-        print(f"  Processed {idx + 1}/{len(test_track_ids)} test tracks...")
-
-print("\nDone classifying all test tracks.")
-
-# Convert to numpy arrays
-y_true = np.array(y_true)
-y_pred = np.array(y_pred)
-
-print("\nNumber of evaluated tracks:", len(y_true))
-
-# Accuracy
-acc = accuracy_score(y_true, y_pred)
-print(f"\n=== RESULTS ===")
-print(f"Accuracy: {acc:.3f}")
+print(”\nCLASSIFICATION REPORT:”)
+print(”-” * 80)
+print(classification_report(actuals, predictions))
 
 # Confusion matrix
-cm = confusion_matrix(y_true, y_pred)
-print("\nConfusion matrix (rows=true, cols=pred):")
+
+print(”\nCONFUSION MATRIX:”)
+cm = confusion_matrix(actuals, predictions)
 print(cm)
 
-# Classification report
-print("\nClassification report:")
-print(classification_report(y_true, y_pred, digits=3))
+# Visualize confusion matrix
 
+plt.figure(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt=‘d’, cmap=‘Blues’, cbar=True)
+plt.title(‘Confusion Matrix - DBN Predictions’, fontsize=14, fontweight=‘bold’)
+plt.ylabel(‘Actual Type’, fontsize=12)
+plt.xlabel(‘Predicted Type’, fontsize=12)
+plt.tight_layout()
+plt.savefig(‘dbn_confusion_matrix.png’, dpi=300, bbox_inches=‘tight’)
+print(“✓ Confusion matrix saved as ‘dbn_confusion_matrix.png’”)
 
+# ============================================================================
 
+# STEP 10: MODEL ANALYSIS AND INSIGHTS
 
+# ============================================================================
+
+print(”\n[STEP 10] Model analysis…”)
+print(”=” * 80)
+
+# Calculate per-class accuracy
+
+unique_classes = np.unique(actuals)
+print(”\nPER-CLASS ACCURACY:”)
+for cls in unique_classes:
+cls_mask = np.array(actuals) == cls
+cls_accuracy = accuracy_score(
+np.array(actuals)[cls_mask],
+np.array(predictions)[cls_mask]
+)
+cls_count = np.sum(cls_mask)
+print(f”  Class {cls}: {cls_accuracy:.4f} (n={cls_count})”)
+
+# Baseline comparison (predicting most common class)
+
+most_common_class = pd.Series(actuals).mode()[0]
+baseline_predictions = [most_common_class] * len(actuals)
+baseline_accuracy = accuracy_score(actuals, baseline_predictions)
+
+print(f”\nBASELINE ACCURACY (most common class): {baseline_accuracy:.4f}”)
+print(f”IMPROVEMENT OVER BASELINE: {(accuracy - baseline_accuracy)*100:.2f}%”)
+
+# ============================================================================
+
+# FINAL SUMMARY
+
+# ============================================================================
+
+print(”\n” + “=” * 80)
+print(“TRAINING COMPLETE - SUMMARY”)
+print(”=” * 80)
+print(f”Total training samples: {len(train_data):,}”)
+print(f”Total test samples: {len(test_data):,}”)
+print(f”Number of time slices: 2 (t=0 and t=1)”)
+print(f”Number of variables: {len(dbn.nodes())}”)
+print(f”Number of edges: {len(dbn.edges())}”)
+print(f”\nFinal Test Accuracy: {accuracy:.4f} ({accuracy*100:.2f}%)”)
+print(”=” * 80)
+
+# ============================================================================
+
+# USAGE NOTES
+
+# ============================================================================
+
+print(”\n” + “=” * 80)
+print(“USAGE NOTES”)
+print(”=” * 80)
+print(”””
+To use this code with your radar data:
+
+1. Replace ‘your_radar_data.csv’ with your actual file path
+1. Adjust discretization bins (n_bins) based on your data distribution
+- Use df[‘column’].hist() to visualize distributions
+- More bins = more detail but requires more data
+1. Modify the DBN structure (edges) based on domain knowledge
+- Add edges for variables you believe are related
+- Remove edges that don’t make sense for radar physics
+1. For better predictions, consider:
+- Using more time slices (t-2, t-1, t, t+1, t+2)
+- Adding domain-specific features
+- Tuning discretization strategies
+- Handling class imbalance with SMOTE or class weights
+1. For production use:
+- Save trained model: dbn.save(‘radar_dbn_model.pkl’)
+- Load model: dbn = DBN.load(‘radar_dbn_model.pkl’)
+- Implement rolling window predictions for streaming data
+1. Advanced techniques:
+- Structure learning: use HillClimbSearch or PC algorithm
+- Bayesian parameter estimation with priors
+- Hidden variables for latent states
+- Variable-length sequences with different mc_id runs
+  “””)

@@ -72,19 +72,13 @@ print("Transitions per mc_id (describe):")
 print(dbn_df.groupby("mc_id").size().describe())
 
 
+import numpy as np
 
-
-
-all_ids = dbn_df[("mc_id",)].unique() if ("mc_id",) in dbn_df.columns else dbn_df["mc_id"].unique()
-# easier if mc_id is a normal column:
-if "mc_id" in dbn_df.columns:
-    ids = dbn_df["mc_id"].unique()
-else:
-    # if mc_id stored as tuple column ('mc_id',) (rare)
-    ids = dbn_df[("mc_id",)].unique()
-
+RANDOM_SEED = 42
+ids = dbn_df["mc_id"].unique()
 rng = np.random.default_rng(RANDOM_SEED)
 rng.shuffle(ids)
+
 cut = int(0.8 * len(ids))
 train_ids = set(ids[:cut])
 test_ids  = set(ids[cut:])
@@ -92,7 +86,9 @@ test_ids  = set(ids[cut:])
 train_data = dbn_df[dbn_df["mc_id"].isin(train_ids)].drop(columns=["mc_id"])
 test_data  = dbn_df[dbn_df["mc_id"].isin(test_ids)].drop(columns=["mc_id"])
 
-print("train:", train_data.shape, "test:", test_data.shape)
+print(train_data.shape, test_data.shape)
+
+
 
 
 

@@ -36,18 +36,18 @@ agg["Type"] = agg["Type"].astype(int)
 
 
 
+
 VARS = ["Type", "range_m", "length_m", "RCSinst_dB", "SNRinst_dB"]
 
 rows = []
 for mc_id, g in agg.sort_values(["mc_id", "time_slice"]).groupby("mc_id"):
-    # g has 1 row per time_slice
-    ts = g["time_slice"].to_numpy()
     g = g.reset_index(drop=True)
+    ts = g["time_slice"].to_numpy()
 
-    # build only consecutive transitions (t -> t+1)
     for i in range(len(g) - 1):
+        # Only consecutive slices
         if ts[i+1] != ts[i] + 1:
-            continue  # skip gaps
+            continue
 
         r = {"mc_id": mc_id}
         for v in VARS:
@@ -56,24 +56,20 @@ for mc_id, g in agg.sort_values(["mc_id", "time_slice"]).groupby("mc_id"):
         rows.append(r)
 
 dbn_df = pd.DataFrame(rows)
-dbn_df.columns = pd.MultiIndex.from_tuples(dbn_df.columns)  # keep mc_id too; we'll drop later
-print("dbn_df:", dbn_df.shape)
 
-# Find the mc_id column inside the MultiIndex (whatever its 2nd-level label is)
-mc_cols = [c for c in dbn_df.columns if isinstance(c, tuple) and c[0] == "mc_id"]
-print("mc_id-like columns:", mc_cols)
+# Convert only DBN variable columns to MultiIndex; keep mc_id plain
+mc_id_col = dbn_df.pop("mc_id")
+dbn_df.columns = pd.MultiIndex.from_tuples(dbn_df.columns)
+dbn_df["mc_id"] = mc_id_col
 
-if len(mc_cols) != 1:
-    raise ValueError(f"Expected exactly 1 mc_id column, found {len(mc_cols)}: {mc_cols}")
+print("dbn_df shape:", dbn_df.shape)
+print("mc_id normal column?", "mc_id" in dbn_df.columns)
 
-mc_key = mc_cols[0]   # e.g. ('mc_id','') or ('mc_id', None)
-
-# Pull it out as a normal column and drop it from MultiIndex
-dbn_df["mc_id"] = dbn_df[mc_key]
-dbn_df = dbn_df.drop(columns=[mc_key])
-
-print("✓ mc_id extracted. Now has plain mc_id column:", "mc_id" in dbn_df.columns)
-print("Remaining columns:", dbn_df.columns)
+print("Unique time slices:", agg["time_slice"].nunique())
+print("agg rows:", agg.shape)
+print("transition rows:", dbn_df.shape[0])
+print("Transitions per mc_id (describe):")
+print(dbn_df.groupby("mc_id").size().describe())
 
 
 

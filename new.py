@@ -59,6 +59,23 @@ dbn_df = pd.DataFrame(rows)
 dbn_df.columns = pd.MultiIndex.from_tuples(dbn_df.columns)  # keep mc_id too; we'll drop later
 print("dbn_df:", dbn_df.shape)
 
+# Find the mc_id column inside the MultiIndex (whatever its 2nd-level label is)
+mc_cols = [c for c in dbn_df.columns if isinstance(c, tuple) and c[0] == "mc_id"]
+print("mc_id-like columns:", mc_cols)
+
+if len(mc_cols) != 1:
+    raise ValueError(f"Expected exactly 1 mc_id column, found {len(mc_cols)}: {mc_cols}")
+
+mc_key = mc_cols[0]   # e.g. ('mc_id','') or ('mc_id', None)
+
+# Pull it out as a normal column and drop it from MultiIndex
+dbn_df["mc_id"] = dbn_df[mc_key]
+dbn_df = dbn_df.drop(columns=[mc_key])
+
+print("✓ mc_id extracted. Now has plain mc_id column:", "mc_id" in dbn_df.columns)
+print("Remaining columns:", dbn_df.columns)
+
+
 
 
 

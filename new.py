@@ -143,18 +143,29 @@ print("DBN Option B (features_t -> Type_t):", acc_B)
 
 def eval_option_C(test_data):
     preds, trues = [], []
-    type_states = model.get_cpds(('Type', 1)).state_names[('Type', 1)]
-    for i in range(len(test_data)):
-        row = test_data.iloc[i]
-        evidence = {('Type', 0): str(int(row[('Type', 0)]))}
-        for var in ["range_m", "length_m", "RCSinst_dB", "SNRinst_dB"]:
+
+    for _, row in test_data.iterrows():
+        evidence = {
+            ('Type', 0): str(int(row[('Type', 0)]))
+        }
+
+        for var in ['range_m', 'length_m', 'RCSinst_dB', 'SNRinst_dB']:
             evidence[(var, 1)] = int(row[(var, 1)])
 
-        q = inference.query(variables=[('Type', 1)], evidence=evidence)
-        pred = type_states[int(np.argmax(q[('Type', 1)].values))]
-        true = str(int(row[('Type', 1)]))
-        preds.append(pred); trues.append(true)
-    return (np.array(preds) == np.array(trues)).mean()
+        q = inference.query(
+            variables=[('Type', 1)],
+            evidence=evidence
+        )
 
+        phi = q[('Type', 1)]
+        pred = phi.state_names[('Type', 1)][np.argmax(phi.values)]
+        true = str(int(row[('Type', 1)]))
+
+        preds.append(pred)
+        trues.append(true)
+
+    return (np.array(preds) == np.array(trues)).mean()
+    
+    
 acc_C = eval_option_C(test_data)
-print("DBN Option C (Type_{t-1} + features_t -> Type_t):", acc_C)
+print("DBN Option C (Type_t-1 + features_t → Type_t):", acc_C)

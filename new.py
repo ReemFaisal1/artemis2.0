@@ -10,6 +10,15 @@ RANDOM_SEED = 42
 # 1) time slices
 df = df.copy()
 df["time_slice"] = (df["time_s"] // TIME_SLICE_SIZE).astype(int)
+from sklearn.preprocessing import LabelEncoder
+
+le = LabelEncoder()
+agg["Type_enc"] = le.fit_transform(agg["Type"].astype(int))
+print("Type mapping:", dict(zip(le.classes_, le.transform(le.classes_))))
+
+# Replace Type with encoded version for DBN
+agg["Type"] = agg["Type_enc"].astype(int)
+agg = agg.drop(columns=["Type_enc"])
 
 # 2) aggregate raw samples -> one row per (mc_id, time_slice)
 def mode_safe(x):

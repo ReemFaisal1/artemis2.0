@@ -213,6 +213,7 @@ for i in range(len(track_mc)):
     t0 = int(track_mc.loc[i, "t0"])
     t1 = int(track_mc.loc[i, "t1"])
 
+    # CORRECT evidence
     evidence = {('Type', 0): int(track_mc.loc[i, ('Type', 0)])}
     for v in CONT:
         evidence[(v, 1)] = int(track_mc.loc[i, (v, 1)])
@@ -224,15 +225,19 @@ for i in range(len(track_mc)):
     pred_prob = float(np.max(probs))
     true_enc = int(track_mc.loc[i, ('Type', 1)])
 
-    pairs = sorted([(int(s), float(p)) for s, p in zip(states, probs)], key=lambda x: x[1], reverse=True)[:3]
+    pairs = sorted(
+        [(int(s), float(p)) for s, p in zip(states, probs)],
+        key=lambda x: x[1],
+        reverse=True
+    )[:3]
+
     pairs_pretty = [(decode_label(s), round(p, 3)) for s, p in pairs]
 
     print(f"\nTransition {i+1}: slice {t0} -> {t1}")
-    print(f"  True Type(t0): {decode_label(int(track_mc.loc[i, ('Type',0)]))}")
+    print(f"  True Type(t0): {decode_label(track_mc.loc[i, ('Type', 0)])}")
     print(f"  True Type(t1): {decode_label(true_enc)}")
     print(f"  Pred Type(t1): {decode_label(pred_enc)}  (confidence={pred_prob:.3f})")
     print(f"  Posterior top-3: {pairs_pretty}")
-    
     
 import time
 

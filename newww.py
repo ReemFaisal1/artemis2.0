@@ -232,3 +232,12 @@ for i in range(len(track)):
     
     
     
+    
+    
+# per-track last slice and number of slices
+track_stats = agg.groupby("mc_id")["time_slice"].agg(["min","max","nunique"]).reset_index()
+print(track_stats[["nunique","max"]].describe())
+
+print("\nHow many tracks reach slice >= k?")
+for k in range(0, 10):
+    print(k, (track_stats["max"] >= k).sum())

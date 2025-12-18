@@ -194,38 +194,43 @@ print("DBN Option C (Type_{t-1} + features_t -> Type_t):", acc_C)
 
 
 
-# Pick a test mc_id that has multiple transitions if possible
-mc_counts = test_df.groupby("mc_id").size().sort_values(ascending=False)
+# Build a "pretty track" table that includes both meta cols and tuple cols
+track = (
+    test_df[["mc_id", "t0", "t1"]]
+    .join(test_data.reset_index(drop=True))   # align rows with test_df
+)
+
+# Pick a test mc_id with most transitions
+mc_counts = track.groupby("mc_id").size().sort_values(ascending=False)
 mc_id = int(mc_counts.index[0])
 print("Chosen mc_id:", mc_id, "transitions:", int(mc_counts.iloc[0]))
 
-track = test_df[test_df["mc_id"] == mc_id].sort_values(["t0","t1"]).reset_index(drop=True)
+track_mc = track[track["mc_id"] == mc_id].sort_values(["t0", "t1"]).reset_index(drop=True)
 
 def decode_label(enc):
-    # Convert encoded type back to original label
     return int(le.inverse_transform([int(enc)])[0])
 
-for i in range(len(track)):
-    t0 = int(track.loc[i, "t0"])
-    t1 = int(track.loc[i, "t1"])
+for i in range(len(track_mc)):
+    t0 = int(track_mc.loc[i, "t0"])
+    t1 = int(track_mc.loc[i, "t1"])
 
-    evidence = {('Type', 0): int(track.loc[i, ('Type', 0)])}
+    evidence = {('Type', 0): int(track_mc.loc[i, ('Type', 0)])}
     for v in CONT:
-        evidence[(v, 1)] = int(track.loc[i, (v, 1)])
+        evidence[(v, 1)] = int(track_mc.loc[i, (v, 1)])
 
     q = inference.query(variables=[('Type', 1)], evidence=evidence)
     states, probs = decode_type_posterior(q)
 
     pred_enc = int(states[int(np.argmax(probs))])
     pred_prob = float(np.max(probs))
-    true_enc = int(track.loc[i, ('Type', 1)])
+    true_enc = int(track_mc.loc[i, ('Type', 1)])
 
-    # pretty print distribution (top 3)
-    pairs = sorted([(int(s), float(p)) for s, p in zip(states, probs)], key=lambda x: x[1], reverse=True)[:3]
+    pairs = sorted([(int(s), float(p)) for s, p in zip(states, probs)],
+                   key=lambda x: x[1], reverse=True)[:3]
     pairs_pretty = [(decode_label(s), round(p, 3)) for s, p in pairs]
 
     print(f"\nTransition {i+1}: slice {t0} -> {t1}")
-    print(f"  True Type(t0): {decode_label(int(track.loc[i, ('Type',0)]))}")
+    print(f"  True Type(t0): {decode_label(int(track_mc.loc[i, ('Type',0)]))}")
     print(f"  True Type(t1): {decode_label(true_enc)}")
     print(f"  Pred Type(t1): {decode_label(pred_enc)}  (confidence={pred_prob:.3f})")
     print(f"  Posterior top-3: {pairs_pretty}")

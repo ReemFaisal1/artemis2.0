@@ -269,3 +269,42 @@ print(track_stats[["nunique","max"]].describe())
 print("\nHow many tracks reach slice >= k?")
 for k in range(0, 10):
     print(k, (track_stats["max"] >= k).sum())
+    
+    
+    
+    
+    
+    
+change_mask = test_data[('Type',0)] != test_data[('Type',1)]
+test_change = test_data[change_mask]
+
+print("Total test transitions:", len(test_data))
+print("Transitions with Type change:", len(test_change))
+print("Change rate:", len(test_change) / len(test_data))
+
+def eval_on_subset(data):
+    preds, trues = [], []
+    for _, row in data.iterrows():
+        evidence = {('Type', 0): int(row[('Type', 0)])}
+        for v in CONT:
+            evidence[(v, 1)] = int(row[(v, 1)])
+
+        q = inference.query(variables=[('Type', 1)], evidence=evidence)
+        states, probs = decode_type_posterior(q)
+        preds.append(int(states[np.argmax(probs)]))
+        trues.append(int(row[('Type', 1)]))
+
+    preds = np.array(preds)
+    trues = np.array(trues)
+    return (preds == trues).mean()
+
+acc_dbn_change = eval_on_subset(test_change)
+
+# Baseline accuracy on change cases (should be 0)
+acc_base_change = (
+    test_change[('Type',0)].to_numpy()
+    == test_change[('Type',1)].to_numpy()
+).mean()
+
+print("Baseline accuracy (change only):", acc_base_change)
+print("DBN accuracy (change only):", acc_dbn_change)

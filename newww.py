@@ -194,48 +194,47 @@ print("DBN Option C (Type_{t-1} + features_t -> Type_t):", acc_C)
 
 
 
-# Build a combined table: meta cols + tuple columns (Type/feature at t0,t1)
-meta = test_df[["mc_id", "t0", "t1"]].reset_index(drop=True)
-vals = test_data.reset_index(drop=True)   # has MultiIndex columns like ('Type',0)
+# 1) Make a safe copy with flat string column names
+track_flat = track_mc.copy()
 
-track = pd.concat([meta, vals], axis=1)
+def flat_name(c):
+    if isinstance(c, tuple) and len(c) >= 2:
+        return f"{c[0]}_t{c[1]}"
+    return str(c)
 
-# Pick a test mc_id that has multiple transitions if possible
-mc_counts = track.groupby("mc_id").size().sort_values(ascending=False)
-mc_id = int(mc_counts.index[0])
-print("Chosen mc_id:", mc_id, "transitions:", int(mc_counts.iloc[0]))
+track_flat.columns = [flat_name(c) for c in track_flat.columns]
 
-track_mc = track[track["mc_id"] == mc_id].sort_values(["t0", "t1"]).reset_index(drop=True)
+# sanity: confirm columns exist
+print([c for c in track_flat.columns if "Type" in c])
+
+# 2) Now your loop uses plain columns (no tuples)
 def decode_label(enc):
     return int(le.inverse_transform([int(enc)])[0])
 
-for i in range(len(track_mc)):
-    t0 = int(track_mc.loc[i, "t0"])
-    t1 = int(track_mc.loc[i, "t1"])
+for i in range(len(track_flat)):
+    t0 = int(track_flat.loc[i, "t0"])
+    t1 = int(track_flat.loc[i, "t1"])
 
-    # CORRECT evidence
-    evidence = {('Type', 0): int(track_mc.loc[i, ('Type', 0)])}
+    type0 = int(track_flat.loc[i, "Type_t0"])
+    true1 = int(track_flat.loc[i, "Type_t1"])
+
+    evidence = {('Type', 0): type0}
     for v in CONT:
-        evidence[(v, 1)] = int(track_mc.loc[i, (v, 1)])
+        evidence[(v, 1)] = int(track_flat.loc[i, f"{v}_t1"])
 
     q = inference.query(variables=[('Type', 1)], evidence=evidence)
     states, probs = decode_type_posterior(q)
 
     pred_enc = int(states[int(np.argmax(probs))])
     pred_prob = float(np.max(probs))
-    true_enc = int(track_mc.loc[i, ('Type', 1)])
 
-    pairs = sorted(
-        [(int(s), float(p)) for s, p in zip(states, probs)],
-        key=lambda x: x[1],
-        reverse=True
-    )[:3]
-
+    pairs = sorted([(int(s), float(p)) for s, p in zip(states, probs)],
+                   key=lambda x: x[1], reverse=True)[:3]
     pairs_pretty = [(decode_label(s), round(p, 3)) for s, p in pairs]
 
     print(f"\nTransition {i+1}: slice {t0} -> {t1}")
-    print(f"  True Type(t0): {decode_label(track_mc.loc[i, ('Type', 0)])}")
-    print(f"  True Type(t1): {decode_label(true_enc)}")
+    print(f"  True Type(t0): {decode_label(type0)}")
+    print(f"  True Type(t1): {decode_label(true1)}")
     print(f"  Pred Type(t1): {decode_label(pred_enc)}  (confidence={pred_prob:.3f})")
     print(f"  Posterior top-3: {pairs_pretty}")
     

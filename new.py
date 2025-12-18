@@ -220,3 +220,27 @@ def eval_option_C_safe(test_data, inference, model):
 
 acc_C = eval_option_C_safe(test_data, inference, model)
 print("DBN Option C accuracy:", acc_C)
+
+
+i = 0
+row = test_data.iloc[i]
+
+type0_states = model.get_cpds(('Type', 0)).state_names[('Type', 0)]
+type1_states = model.get_cpds(('Type', 1)).state_names[('Type', 1)]
+print("Type_0 states:", type0_states)
+print("Type_1 states:", type1_states)
+
+evidence = {('Type', 0): row[('Type', 0)]}
+for var in ['range_m','length_m','RCSinst_dB','SNRinst_dB']:
+    evidence[(var,1)] = row[(var,1)]
+
+print("RAW evidence:", evidence)
+print("RAW true Type_1:", row[('Type',1)], type(row[('Type',1)]))
+
+q = inference.query(variables=[('Type',1)], evidence=evidence)
+phi = q[('Type',1)]
+print("phi.values:", phi.values)
+print("phi state_names:", phi.state_names[('Type',1)])
+
+pred_state = phi.state_names[('Type',1)][int(np.argmax(phi.values))]
+print("PRED state:", pred_state, type(pred_state))

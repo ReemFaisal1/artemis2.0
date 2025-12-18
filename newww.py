@@ -194,19 +194,18 @@ print("DBN Option C (Type_{t-1} + features_t -> Type_t):", acc_C)
 
 
 
-# Build a "pretty track" table that includes both meta cols and tuple cols
-track = (
-    test_df[["mc_id", "t0", "t1"]]
-    .join(test_data.reset_index(drop=True))   # align rows with test_df
-)
+# Build a combined table: meta cols + tuple columns (Type/feature at t0,t1)
+meta = test_df[["mc_id", "t0", "t1"]].reset_index(drop=True)
+vals = test_data.reset_index(drop=True)   # has MultiIndex columns like ('Type',0)
 
-# Pick a test mc_id with most transitions
+track = pd.concat([meta, vals], axis=1)
+
+# Pick a test mc_id that has multiple transitions if possible
 mc_counts = track.groupby("mc_id").size().sort_values(ascending=False)
 mc_id = int(mc_counts.index[0])
 print("Chosen mc_id:", mc_id, "transitions:", int(mc_counts.iloc[0]))
 
 track_mc = track[track["mc_id"] == mc_id].sort_values(["t0", "t1"]).reset_index(drop=True)
-
 def decode_label(enc):
     return int(le.inverse_transform([int(enc)])[0])
 

@@ -169,3 +169,45 @@ def eval_option_C(test_data):
     
 acc_C = eval_option_C(test_data)
 print("DBN Option C (Type_t-1 + features_t → Type_t):", acc_C)
+
+
+
+import numpy as np
+
+def coerce_to_state(value, allowed_states):
+    """
+    Coerce a value to match the type/format used in pgmpy state_names.
+    allowed_states is a list like [1,2,4] or ['1','2','4'].
+    """
+    # If model uses strings, cast to str of int
+    if len(allowed_states) and isinstance(allowed_states[0], str):
+        return str(int(value))
+    # If model uses ints, cast to int
+    return int(value)
+
+def eval_option_C_safe(test_data, inference, model):
+    preds, trues = [], []
+
+    type0_states = model.get_cpds(('Type', 0)).state_names[('Type', 0)]
+    type1_states = model.get_cpds(('Type', 1)).state_names[('Type', 1)]
+
+    for _, row in test_data.iterrows():
+        evidence = {
+            ('Type', 0): coerce_to_state(row[('Type', 0)], type0_states)
+        }
+        for var in ['range_m', 'length_m', 'RCSinst_dB', 'SNRinst_dB']:
+            evidence[(var, 1)] = int(row[(var, 1)])
+
+        q = inference.query(variables=[('Type', 1)], evidence=evidence)
+
+        phi = q[('Type', 1)]
+        pred = phi.state_names[('Type', 1)][int(np.argmax(phi.values))]
+        true = coerce_to_state(row[('Type', 1)], type1_states)
+
+        preds.append(pred)
+        trues.append(true)
+
+    return (np.array(preds) == np.array(trues)).mean()
+
+acc_C = eval_option_C_safe(test_data, inference, model)
+print("DBN Option C accuracy:", acc_C)

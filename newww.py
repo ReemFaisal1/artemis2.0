@@ -232,7 +232,29 @@ for i in range(len(track)):
     
     
     
-    
+import time
+
+def eval_option_C(test_data, every=500):
+    t0 = time.time()
+    preds, trues = [], []
+    n = len(test_data)
+
+    for i, (_, row) in enumerate(test_data.iterrows(), 1):
+        evidence = {('Type', 0): int(row[('Type', 0)])}
+        for v in CONT:
+            evidence[(v, 1)] = int(row[(v, 1)])
+
+        q = inference.query(variables=[('Type', 1)], evidence=evidence)
+        states, probs = decode_type_posterior(q)
+        preds.append(int(states[int(np.argmax(probs))]))
+        trues.append(int(row[('Type', 1)]))
+
+        if i % every == 0:
+            dt = time.time() - t0
+            print(f"{i}/{n} done | elapsed {dt:.1f}s | ~{dt/i:.3f}s/row")
+
+    preds = np.array(preds); trues = np.array(trues)
+    return (preds == trues).mean()
     
 # per-track last slice and number of slices
 track_stats = agg.groupby("mc_id")["time_slice"].agg(["min","max","nunique"]).reset_index()
